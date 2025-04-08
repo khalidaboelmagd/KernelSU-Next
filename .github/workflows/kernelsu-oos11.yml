@@ -62,16 +62,6 @@ jobs:
         git rev-list --count HEAD
         echo "VERSION=$(expr $(git rev-list --count HEAD) + 10200)" >> $GITHUB_OUTPUT
         cd ..
-    #- name: Apply SUSFS Patch for 4.14
-    #  run: |
-    #      echo "Applying SUSFS patch for 4.14 kernel"
-    #      PATCH_DIR="susfs/kernel_patches"
-    #      if [ -f "$PATCH_DIR/kernel_4.14.patch" ]; then
-    #        patch -p1 < "$PATCH_DIR/kernel_4.14.patch"
-    #      else
-    #        echo "SUSFS patch for kernel 4.14 not found!"
-    #        exit 1
-    #      fi
     - name: Build KernelSU-Next
       run: |
        export PATH=$(pwd)/clang/bin/:$(pwd)/aarch64/bin/:$PATH
@@ -80,8 +70,6 @@ jobs:
        export LD=ld.lld
        export BRAND_SHOW_FLAG=oneplus
        export TARGET_PRODUCT=msmnile
-       #curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next-susfs/kernel/setup.sh" | bash -s next-susfs
-       #curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next-susfs/kernel/setup.sh" | bash -s next
        make $KERNEL_CMDLINE $KERNEL_DEFCONFIG CC="ccache clang-14"
        make $KERNEL_CMDLINE CC="ccache clang-14" -j$(nproc --all)
        cp out/arch/arm64/boot/Image AnyKernel3
