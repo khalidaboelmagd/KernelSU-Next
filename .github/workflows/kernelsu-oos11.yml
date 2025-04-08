@@ -72,11 +72,10 @@ jobs:
         export TARGET_PRODUCT=msmnile
         # Apply KernelSU-Next patches (which include SUSFS support)
         curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next-susfs/kernel/setup.sh" | bash -s next-susfs
-        # Generate the default configuration
-        make $KERNEL_CMDLINE $KERNEL_DEFCONFIG CC="ccache clang-14"
         # Enable SUSFS support in the configuration
         scripts/config --file .config --enable CONFIG_SUSFS
-        make olddefconfig
+        # Generate the default configuration
+        make $KERNEL_CMDLINE $KERNEL_DEFCONFIG CC="ccache clang-14"
         # Build the kernel
         make $KERNEL_CMDLINE CC="ccache clang-14" -j$(nproc --all)
         cp out/arch/arm64/boot/Image AnyKernel3
