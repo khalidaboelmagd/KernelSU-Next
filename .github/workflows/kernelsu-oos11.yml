@@ -71,9 +71,7 @@ jobs:
         export BRAND_SHOW_FLAG=oneplus
         export TARGET_PRODUCT=msmnile
         # Apply KernelSU-Next patches (which include SUSFS support)
-        curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next-susfs/kernel/setup.sh" | bash -s next-susfs
-        # Enable SUSFS support in the configuration
-        scripts/config --file .config --enable CONFIG_SUSFS
+        #curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next-susfs/kernel/setup.sh" | bash -s next-susfs
         # Generate the default configuration
         make $KERNEL_CMDLINE $KERNEL_DEFCONFIG CC="ccache clang-14"
         # Build the kernel
