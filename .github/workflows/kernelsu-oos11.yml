@@ -62,6 +62,16 @@ jobs:
         git rev-list --count HEAD
         echo "VERSION=$(expr $(git rev-list --count HEAD) + 10200)" >> $GITHUB_OUTPUT
         cd ..
+    - name: Apply SUSFS Patch for 4.14
+      run: |
+          echo "Applying SUSFS patch for 4.14 kernel"
+          PATCH_DIR="susfs/kernel_patches"
+          if [ -f "$PATCH_DIR/kernel_4.14.patch" ]; then
+            patch -p1 < "$PATCH_DIR/kernel_4.14.patch"
+          else
+            echo "SUSFS patch for kernel 4.14 not found!"
+            exit 1
+          fi
     - name: Build KernelSU-Next
       run: |
        export PATH=$(pwd)/clang/bin/:$(pwd)/aarch64/bin/:$PATH
