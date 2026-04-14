@@ -6,12 +6,11 @@ on:
     branches: [main, fix/ksun-susfs]
 
 env:
-  # v3.1.0-legacy = non-GKI (legacy) variant, without SUSFS baked in.
-  # SUSFS is intentionally disabled in this build: the working repo
-  # (android_kernel_oneplus_sm8150) proves the freeze-on-root-grant
-  # bug is a KSU driver/kprobe issue, not a SUSFS issue. Fix root
-  # first with a newer driver; add SUSFS back once root grant works.
-  KSU_NEXT_TAG: v3.1.0-legacy
+  # KSU_NEXT_TAG is resolved at build time to the LATEST tag matching
+  # the legacy line (vX.Y.Z-legacy, excluding susfs variants because
+  # SUSFS requires shims on this 4.14 msm tree). See "Resolve latest
+  # KSU-Next legacy tag" step. Override here to pin to a specific tag
+  # if a new legacy release regresses on OP7Pro.
   KERNEL_DEFCONFIG: blu_spark_defconfig
   CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
   CCACHE_NOHASHDIR: "true"
@@ -50,7 +49,23 @@ jobs:
           git clone --depth=1 -b oneplus7 https://github.com/snowwolf725/AnyKernel3
           rm -rf AnyKernel3/.git
 
-      - name: Integrate KernelSU-Next (pinned ${{ env.KSU_NEXT_TAG }})
+      - name: Resolve latest KSU-Next legacy tag
+        id: ksun_tag
+        run: |
+          set -euo pipefail
+          TAG=$(curl -sSf 'https://api.github.com/repos/KernelSU-Next/KernelSU-Next/tags?per_page=100' \
+            | jq -r '.[].name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+-legacy$"))' \
+            | sort -V | tail -1)
+          if [ -z "$TAG" ]; then
+            echo "FAIL: could not resolve latest KSU-Next legacy tag"
+            exit 1
+          fi
+          echo "Resolved latest KSU-Next legacy tag: $TAG"
+          echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Integrate KernelSU-Next (${{ steps.ksun_tag.outputs.TAG }})
+        env:
+          KSU_NEXT_TAG: ${{ steps.ksun_tag.outputs.TAG }}
         run: |
           set -euo pipefail
           # Clean any prior integration attempts so setup.sh has a fresh tree
@@ -132,7 +147,7 @@ jobs:
           body: |
             Device: OnePlus 7 / 7Pro / 7T / 7TPro
             Target: OxygenOS 11
-            KernelSU-Next: ${{ env.KSU_NEXT_TAG }}
+            KernelSU-Next: ${{ steps.ksun_tag.outputs.TAG }} (auto-latest legacy)
             SUSFS: disabled (add in follow-up once root grant is stable)
         # Uses the built-in GITHUB_TOKEN (granted contents:write at the
         # workflow level above). No repo secret required.
