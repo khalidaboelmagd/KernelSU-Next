@@ -56,10 +56,12 @@ jobs:
           # On feat/full-susfs branch we want the legacy-susfs variant of
           # KSU-Next (driver has the SUSFS calls baked in). On other
           # branches, fall back to the plain legacy line.
+          # Single backslashes — pattern is passed to jq via --arg
+          # (no jq-string-literal escaping layer).
           if [ "${GITHUB_REF_NAME:-}" = "feat/full-susfs" ]; then
-            PATTERN='^v[0-9]+\\.[0-9]+\\.[0-9]+-legacy-susfs$'
+            PATTERN='^v[0-9]+\.[0-9]+\.[0-9]+-legacy-susfs$'
           else
-            PATTERN='^v[0-9]+\\.[0-9]+\\.[0-9]+-legacy$'
+            PATTERN='^v[0-9]+\.[0-9]+\.[0-9]+-legacy$'
           fi
           TAG=$(curl -sSf 'https://api.github.com/repos/KernelSU-Next/KernelSU-Next/tags?per_page=100' \
             | jq -r --arg p "$PATTERN" '.[].name | select(test($p))' \
