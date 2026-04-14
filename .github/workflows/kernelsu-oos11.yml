@@ -3,7 +3,7 @@ name: Build OnePlus-Sm8150-Kernel-OOS11
 on:
   workflow_dispatch:
   push:
-    branches: [main, fix/ksun-susfs]
+    branches: [main, fix/ksun-susfs, feat/full-susfs]
 
 env:
   # KSU_NEXT_TAG is resolved at build time to the LATEST tag matching
@@ -49,18 +49,26 @@ jobs:
           git clone --depth=1 -b oneplus7 https://github.com/snowwolf725/AnyKernel3
           rm -rf AnyKernel3/.git
 
-      - name: Resolve latest KSU-Next legacy tag
+      - name: Resolve latest KSU-Next legacy-susfs tag
         id: ksun_tag
         run: |
           set -euo pipefail
+          # On feat/full-susfs branch we want the legacy-susfs variant of
+          # KSU-Next (driver has the SUSFS calls baked in). On other
+          # branches, fall back to the plain legacy line.
+          if [ "${GITHUB_REF_NAME:-}" = "feat/full-susfs" ]; then
+            PATTERN='^v[0-9]+\\.[0-9]+\\.[0-9]+-legacy-susfs$'
+          else
+            PATTERN='^v[0-9]+\\.[0-9]+\\.[0-9]+-legacy$'
+          fi
           TAG=$(curl -sSf 'https://api.github.com/repos/KernelSU-Next/KernelSU-Next/tags?per_page=100' \
-            | jq -r '.[].name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+-legacy$"))' \
+            | jq -r --arg p "$PATTERN" '.[].name | select(test($p))' \
             | sort -V | tail -1)
           if [ -z "$TAG" ]; then
-            echo "FAIL: could not resolve latest KSU-Next legacy tag"
+            echo "FAIL: could not resolve latest KSU-Next tag for $GITHUB_REF_NAME"
             exit 1
           fi
-          echo "Resolved latest KSU-Next legacy tag: $TAG"
+          echo "Resolved KSU-Next tag: $TAG"
           echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Integrate KernelSU-Next (${{ steps.ksun_tag.outputs.TAG }})
@@ -75,6 +83,37 @@ jobs:
           test -d KernelSU-Next
           echo "### KernelSU-Next commit:"
           git -C KernelSU-Next log -1 --oneline || true
+
+      - name: Integrate SUSFS (Frankenstein 4.14 + 5.10 attempt)
+        if: github.ref_name == 'feat/full-susfs'
+        run: |
+          set -euo pipefail
+          # Strategy: KSU-Next v3.1.0-legacy-susfs needs ~33 susfs
+          # functions but susfs4ksu kernel-4.14 branch only provides
+          # ~15. The newer gki-android12-5.10 branch provides them all,
+          # so we take susfs.c + headers from there and the kernel-side
+          # hook patch from kernel-4.14 (since fs/* internals differ).
+          rm -rf susfs-414 susfs-510
+          git clone --depth=1 -b kernel-4.14 \
+            https://gitlab.com/simonpunk/susfs4ksu.git susfs-414
+          git clone --depth=1 -b gki-android12-5.10 \
+            https://gitlab.com/simonpunk/susfs4ksu.git susfs-510
+          # Take SUSFS implementation from 5.10 (full API coverage)
+          cp susfs-510/kernel_patches/fs/susfs.c                fs/
+          cp susfs-510/kernel_patches/include/linux/susfs.h     include/linux/
+          cp susfs-510/kernel_patches/include/linux/susfs_def.h include/linux/
+          # Apply 4.14-specific hooks (touches fs/Makefile, fs/namei.c,
+          # fs/dcache.c, fs/stat.c, etc — kernel internals only)
+          patch -p1 --forward --fuzz=3 \
+            < susfs-414/kernel_patches/50_add_susfs_in_kernel-4.14.patch
+          # 4.14 lacks inotify_mark_user_mask helper; use the equivalent
+          # mainline expression that existed before that helper was
+          # factored out.
+          if grep -q "inotify_mark_user_mask" fs/notify/fdinfo.c; then
+            sed -i 's/inotify_mark_user_mask(mark)/(mark->mask \& IN_ALL_EVENTS)/g' fs/notify/fdinfo.c
+            ! grep -q "inotify_mark_user_mask" fs/notify/fdinfo.c
+          fi
+          echo "### SUSFS integrated. Will see what compiles."
 
       - name: Configure + verify .config
         run: |
@@ -91,19 +130,22 @@ jobs:
           # this tree does not carry manual ksu_handle_* call sites). If it
           # is not =y the driver has no hooks and root grant will silently
           # fail or panic — bail out now rather than ship a broken kernel.
-          for k in CONFIG_KSU CONFIG_KSU_KPROBES_HOOK CONFIG_KRETPROBES \
-                   CONFIG_KPROBES CONFIG_HAVE_SYSCALL_TRACEPOINTS; do
+          REQUIRED="CONFIG_KSU CONFIG_KSU_KPROBES_HOOK CONFIG_KRETPROBES CONFIG_KPROBES CONFIG_HAVE_SYSCALL_TRACEPOINTS"
+          if [ "${GITHUB_REF_NAME:-}" = "feat/full-susfs" ]; then
+            REQUIRED="$REQUIRED CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SPOOF_UNAME"
+          fi
+          for k in $REQUIRED; do
             if ! grep -qE "^${k}=y" out/.config; then
               echo "FAIL: ${k} is not set in out/.config"
               grep -E "${k}" out/.config || echo "  (not present at all)"
               exit 1
             fi
           done
-          echo "### Final KSU / KPROBES config:"
-          grep -E "KSU|KPROBES|TRACEPOINTS" out/.config | sort || true
-          # Guard: make sure SUSFS did NOT accidentally sneak in
-          if grep -qE "^CONFIG_KSU_SUSFS" out/.config; then
-            echo "FAIL: CONFIG_KSU_SUSFS is set but SUSFS integration is disabled in this build"
+          echo "### Final KSU / SUSFS / KPROBES config:"
+          grep -E "KSU|SUSFS|KPROBES|TRACEPOINTS" out/.config | sort || true
+          # Guard: SUSFS should not be set on non-susfs branches
+          if [ "${GITHUB_REF_NAME:-}" != "feat/full-susfs" ] && grep -qE "^CONFIG_KSU_SUSFS" out/.config; then
+            echo "FAIL: CONFIG_KSU_SUSFS is set but SUSFS integration is disabled on this branch"
             exit 1
           fi
 
