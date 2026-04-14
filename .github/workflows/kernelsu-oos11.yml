@@ -1,92 +1,137 @@
 name: Build OnePlus-Sm8150-Kernel-OOS11
+
 on:
   workflow_dispatch:
-  schedule:
-      # Run once a week on Sunday at midnight. See http://crontab.guru
-      - cron: '0 21 * * *'
   push:
-    branches:
-      - main
-  pull_request:
-      branches:
-      - main
+    branches: [main, fix/ksun-susfs]
+
+env:
+  KSU_NEXT_TAG: v3.1.0-legacy-susfs
+  SUSFS_BRANCH: kernel-4.14
+  KERNEL_DEFCONFIG: blu_spark_defconfig
+  CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+  CCACHE_NOHASHDIR: "true"
+  CCACHE_MAXSIZE: "2G"
+  CCACHE_HARDLINK: "true"
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
-      CCACHE_NOHASHDIR: "true"
-      CCACHE_MAXSIZE: "2G"
-      CCACHE_HARDLINK: "true"
-      KERNEL_DEFCONFIG: "blu_spark_defconfig"
-      KERNEL_CMDLINE: "ARCH=arm64 CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-androidkernel- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 O=out"
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        submodules: 'true'
-        fetch-depth: 1
-    - name: Set up ccache
-      uses: hendrikmuhs/ccache-action@v1.2
-      
-    - name: Remove unnecessary files
-      run: |
-        sudo rm -rf /opt/ghc
-        sudo rm -rf "/usr/local/share/boost"
-        sudo rm -rf /usr/share/dotnet
-        sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-    - name: Install dependencies
-      run: |
-        sudo apt-get update -y 
-        sudo apt install gcc-aarch64-linux-gnu -y
-        sudo apt install gcc-arm-linux-gnueabi -y
-        sudo apt install clang-14 -y
-        sudo apt install binutils make python3 libssl-dev build-essential bc  bison flex unzip libssl-dev ca-certificates xz-utils mkbootimg cpio device-tree-compiler git git-lfs -y
-        git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 aarch64 --depth=1
-        git clone https://github.com/snowwolf725/AnyKernel3 -b oneplus7 --depth=1
-        # git clone https://github.com/khalidaboelmagd/AnyKernel3
-        rm -rf AnyKernel3/.git
-    - name: Remove unnecessary files
-      run: |
-        sudo rm -rf /opt/ghc
-        sudo rm -rf "/usr/local/share/boost"
-        sudo rm -rf /usr/share/dotnet
-        sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-    - name: Get Version
-      id: get_version
-      run: |
-        cd KernelSU-Next
-        git fetch --unshallow
-        git pull
-        git rev-list --count HEAD
-        echo "VERSION=$(expr $(git rev-list --count HEAD) + 10200)" >> $GITHUB_OUTPUT
-        cd ..
-    - name: Build KernelSU-Next
-      run: |
-       export PATH=$(pwd)/clang/bin/:$(pwd)/aarch64/bin/:$PATH
-       export ARCH=arm64
-       export SUBARCH=arm64
-       export LD=ld.lld
-       export BRAND_SHOW_FLAG=oneplus
-       export TARGET_PRODUCT=msmnile
-       make $KERNEL_CMDLINE $KERNEL_DEFCONFIG CC="ccache clang-14"
-       make $KERNEL_CMDLINE CC="ccache clang-14" -j$(nproc --all)
-       cp out/arch/arm64/boot/Image AnyKernel3
-    - name: Create AK3 zip for android 11
-      run: |
-       cd AnyKernel3
-       zip -r ../OP7-OOS11-KernelSU-Next-${{ steps.get_version.outputs.VERSION }}.zip *
-       cd ..
-    - name: Upload to Release
-      uses: softprops/action-gh-release@v2
-      with:
-        files: |
-          OP7-OOS11-KernelSU-Next-${{ steps.get_version.outputs.VERSION }}.zip
-        name: OnePlus7_KernelSU-Next-${{ steps.get_version.outputs.VERSION }}
-        tag_name: ${{ steps.get_version.outputs.VERSION }}
-        body: |
-          Device: Oneplus 7/Oneplus 7Pro/Oneplus 7T/Oneplus 7TPro
-          Target:OOS11
-      env:
-        GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /opt/ghc /usr/local/share/boost /usr/share/dotnet "$AGENT_TOOLSDIRECTORY" || true
+
+      - name: Install toolchain + deps
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi clang-14 lld-14 \
+            binutils make python3 libssl-dev build-essential bc bison flex \
+            unzip ca-certificates xz-utils mkbootimg cpio device-tree-compiler \
+            git git-lfs patch
+          git clone --depth=1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 aarch64
+          git clone --depth=1 -b oneplus7 https://github.com/snowwolf725/AnyKernel3
+          rm -rf AnyKernel3/.git
+
+      - name: Integrate KernelSU-Next (pinned ${{ env.KSU_NEXT_TAG }})
+        run: |
+          set -euo pipefail
+          # Clean any prior integration attempts so setup.sh has a fresh tree
+          rm -rf KernelSU-Next drivers/kernelsu
+          curl -LSsf "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/${KSU_NEXT_TAG}/kernel/setup.sh" \
+            | bash -s "${KSU_NEXT_TAG}"
+          test -d KernelSU-Next
+          echo "### KernelSU-Next commit:"
+          git -C KernelSU-Next log -1 --oneline || true
+
+      - name: Integrate SUSFS kernel patch (branch ${{ env.SUSFS_BRANCH }})
+        run: |
+          set -euo pipefail
+          rm -rf susfs
+          git clone --depth=1 -b "${SUSFS_BRANCH}" \
+            https://gitlab.com/simonpunk/susfs4ksu.git susfs
+          # Drop the susfs source files into the kernel tree
+          cp susfs/kernel_patches/fs/susfs.c                  fs/
+          cp susfs/kernel_patches/include/linux/susfs.h       include/linux/
+          cp susfs/kernel_patches/include/linux/susfs_def.h   include/linux/
+          # Apply the kernel-side patch
+          patch -p1 --forward --fuzz=3 \
+            < susfs/kernel_patches/50_add_susfs_in_kernel-4.14.patch
+          echo "### SUSFS kernel patch applied."
+
+      - name: Configure + verify .config
+        run: |
+          set -euo pipefail
+          export PATH="$(pwd)/aarch64/bin:$PATH"
+          make ARCH=arm64 O=out \
+            CC="ccache clang-14" LLVM=1 LLVM_IAS=1 \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-androidkernel- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            "${KERNEL_DEFCONFIG}"
+          echo "### Verifying required configs survived Kconfig:"
+          for k in CONFIG_KSU CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH \
+                   CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SPOOF_UNAME; do
+            if ! grep -qE "^${k}=y" out/.config; then
+              echo "FAIL: ${k} is not set in out/.config"
+              grep -E "${k}" out/.config || echo "  (not present at all)"
+              exit 1
+            fi
+          done
+          echo "### Final KSU / SUSFS / KPROBES config:"
+          grep -E "KSU|SUSFS|KPROBES" out/.config | sort || true
+
+      - name: Build kernel Image
+        run: |
+          set -euo pipefail
+          export PATH="$(pwd)/aarch64/bin:$PATH"
+          export KBUILD_BUILD_USER=khalid
+          export KBUILD_BUILD_HOST=ksun-ci
+          make ARCH=arm64 O=out \
+            CC="ccache clang-14" LLVM=1 LLVM_IAS=1 \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-androidkernel- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            -j"$(nproc --all)"
+          cp out/arch/arm64/boot/Image AnyKernel3/
+
+      - name: Version + package AnyKernel3
+        id: pack
+        run: |
+          VERSION="$(date +%Y%m%d-%H%M)"
+          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
+          cd AnyKernel3
+          zip -r "../OP7-OOS11-KSUN-${VERSION}.zip" *
+          cd ..
+          ls -la OP7-OOS11-KSUN-*.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OP7-OOS11-KSUN-${{ steps.pack.outputs.VERSION }}
+          path: OP7-OOS11-KSUN-*.zip
+
+      - name: Release
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: OP7-OOS11-KSUN-*.zip
+          name: OP7-OOS11-KSUN-${{ steps.pack.outputs.VERSION }}
+          tag_name: ${{ steps.pack.outputs.VERSION }}
+          body: |
+            Device: OnePlus 7 / 7Pro / 7T / 7TPro
+            Target: OxygenOS 11
+            KernelSU-Next: ${{ env.KSU_NEXT_TAG }}
+            SUSFS: ${{ env.SUSFS_BRANCH }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
