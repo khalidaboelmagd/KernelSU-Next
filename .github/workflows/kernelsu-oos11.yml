@@ -6,8 +6,12 @@ on:
     branches: [main, fix/ksun-susfs]
 
 env:
-  KSU_NEXT_TAG: v3.1.0-legacy-susfs
-  SUSFS_BRANCH: kernel-4.14
+  # v3.1.0-legacy = non-GKI (legacy) variant, without SUSFS baked in.
+  # SUSFS is intentionally disabled in this build: the working repo
+  # (android_kernel_oneplus_sm8150) proves the freeze-on-root-grant
+  # bug is a KSU driver/kprobe issue, not a SUSFS issue. Fix root
+  # first with a newer driver; add SUSFS back once root grant works.
+  KSU_NEXT_TAG: v3.1.0-legacy
   KERNEL_DEFCONFIG: blu_spark_defconfig
   CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
   CCACHE_NOHASHDIR: "true"
@@ -54,21 +58,6 @@ jobs:
           echo "### KernelSU-Next commit:"
           git -C KernelSU-Next log -1 --oneline || true
 
-      - name: Integrate SUSFS kernel patch (branch ${{ env.SUSFS_BRANCH }})
-        run: |
-          set -euo pipefail
-          rm -rf susfs
-          git clone --depth=1 -b "${SUSFS_BRANCH}" \
-            https://gitlab.com/simonpunk/susfs4ksu.git susfs
-          # Drop the susfs source files into the kernel tree
-          cp susfs/kernel_patches/fs/susfs.c                  fs/
-          cp susfs/kernel_patches/include/linux/susfs.h       include/linux/
-          cp susfs/kernel_patches/include/linux/susfs_def.h   include/linux/
-          # Apply the kernel-side patch
-          patch -p1 --forward --fuzz=3 \
-            < susfs/kernel_patches/50_add_susfs_in_kernel-4.14.patch
-          echo "### SUSFS kernel patch applied."
-
       - name: Configure + verify .config
         run: |
           set -euo pipefail
@@ -85,17 +74,20 @@ jobs:
           # is not =y the driver has no hooks and root grant will silently
           # fail or panic — bail out now rather than ship a broken kernel.
           for k in CONFIG_KSU CONFIG_KSU_KPROBES_HOOK CONFIG_KRETPROBES \
-                   CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH \
-                   CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SPOOF_UNAME \
-                   CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG; do
+                   CONFIG_KPROBES CONFIG_HAVE_SYSCALL_TRACEPOINTS; do
             if ! grep -qE "^${k}=y" out/.config; then
               echo "FAIL: ${k} is not set in out/.config"
               grep -E "${k}" out/.config || echo "  (not present at all)"
               exit 1
             fi
           done
-          echo "### Final KSU / SUSFS / KPROBES config:"
-          grep -E "KSU|SUSFS|KPROBES" out/.config | sort || true
+          echo "### Final KSU / KPROBES config:"
+          grep -E "KSU|KPROBES|TRACEPOINTS" out/.config | sort || true
+          # Guard: make sure SUSFS did NOT accidentally sneak in
+          if grep -qE "^CONFIG_KSU_SUSFS" out/.config; then
+            echo "FAIL: CONFIG_KSU_SUSFS is set but SUSFS integration is disabled in this build"
+            exit 1
+          fi
 
       - name: Build kernel Image
         run: |
@@ -138,6 +130,6 @@ jobs:
             Device: OnePlus 7 / 7Pro / 7T / 7TPro
             Target: OxygenOS 11
             KernelSU-Next: ${{ env.KSU_NEXT_TAG }}
-            SUSFS: ${{ env.SUSFS_BRANCH }}
+            SUSFS: disabled (add in follow-up once root grant is stable)
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}

@@ -2,24 +2,12 @@
 # Automatically generated file; DO NOT EDIT.
 # Linux/arm64 4.14.190 Kernel Configuration
 #
-# KernelSU-Next + SUSFS (config names verified against
-# KernelSU-Next v3.1.0-legacy-susfs kernel/Kconfig)
+# KernelSU-Next (no SUSFS in this build - to be added once base root
+# grant is confirmed stable with the upgraded KSU-Next driver).
+# Hook mode auto-selects KSU_KPROBES_HOOK because CONFIG_KPROBES=y
+# and CONFIG_KSU_MANUAL_HOOK is unset (tree has no ksu_handle_*
+# call sites in fs/*.c so manual hooks would silently no-op).
 CONFIG_KSU=y
-# Hook mode: leave MANUAL_HOOK unset so Kconfig auto-selects
-# KSU_KPROBES_HOOK (kernel has CONFIG_KPROBES=y). Manual hook
-# would require ksu_handle_* call sites in fs/*.c which are not
-# present in this tree.
-CONFIG_KSU_SUSFS=y
-CONFIG_KSU_SUSFS_SUS_PATH=y
-CONFIG_KSU_SUSFS_SUS_MOUNT=y
-CONFIG_KSU_SUSFS_SUS_KSTAT=y
-CONFIG_KSU_SUSFS_SUS_MAP=y
-CONFIG_KSU_SUSFS_TRY_UMOUNT=y
-CONFIG_KSU_SUSFS_SPOOF_UNAME=y
-CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
-CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
-CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
-CONFIG_KSU_SUSFS_ENABLE_LOG=y
 ####################################
 CONFIG_ARM64=y
 CONFIG_64BIT=y
