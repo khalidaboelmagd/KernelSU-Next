@@ -80,8 +80,14 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             "${KERNEL_DEFCONFIG}"
           echo "### Verifying required configs survived Kconfig:"
-          for k in CONFIG_KSU CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH \
-                   CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SPOOF_UNAME; do
+          # KSU_KPROBES_HOOK must be auto-selected (kernel has KPROBES=y and
+          # this tree does not carry manual ksu_handle_* call sites). If it
+          # is not =y the driver has no hooks and root grant will silently
+          # fail or panic — bail out now rather than ship a broken kernel.
+          for k in CONFIG_KSU CONFIG_KSU_KPROBES_HOOK CONFIG_KRETPROBES \
+                   CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH \
+                   CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SPOOF_UNAME \
+                   CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG; do
             if ! grep -qE "^${k}=y" out/.config; then
               echo "FAIL: ${k} is not set in out/.config"
               grep -E "${k}" out/.config || echo "  (not present at all)"
