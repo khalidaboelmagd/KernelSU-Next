@@ -120,6 +120,10 @@ jobs:
           path: OP7-OOS11-KSUN-*.zip
 
       - name: Release
+        # Release requires a PAT with contents:write. If the token lacks
+        # that scope the step errors but the artifact has already been
+        # uploaded in the previous step, so do not fail the whole run.
+        continue-on-error: true
         if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
