@@ -64,6 +64,7 @@ jobs:
           echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Integrate KernelSU-Next (${{ steps.ksun_tag.outputs.TAG }})
+        id: ksun_integrate
         env:
           KSU_NEXT_TAG: ${{ steps.ksun_tag.outputs.TAG }}
         run: |
@@ -75,6 +76,27 @@ jobs:
           test -d KernelSU-Next
           echo "### KernelSU-Next commit:"
           git -C KernelSU-Next log -1 --oneline || true
+          # Compute the driver version code the same way KSU-Next's Kbuild
+          # does. The formula constants drift per tag (v3.1.0-legacy used
+          # 30000+count+119; v3.2.0-legacy uses 30000+count+150). Parse the
+          # base and offset directly out of KernelSU-Next/kernel/Kbuild so
+          # this stays correct whatever future tags publish.
+          COUNT=$(git -C KernelSU-Next rev-list --count HEAD)
+          # line looks like: $(eval KSU_VERSION=$(shell expr 30000 + $(KSU_GIT_VERSION) + 150))
+          FORMULA=$(grep -E 'expr [0-9]+ \+ \$\(KSU_GIT_VERSION\) \+ [0-9]+' \
+                    KernelSU-Next/kernel/Kbuild | head -1)
+          BASE=$(  echo "$FORMULA" | sed -E 's/.*expr ([0-9]+) \+.*/\1/')
+          OFFSET=$(echo "$FORMULA" | sed -E 's/.*\+ ([0-9]+)\)\).*/\1/')
+          if [ -z "$BASE" ] || [ -z "$OFFSET" ]; then
+            echo "FAIL: could not parse KSU_VERSION formula from Kbuild"
+            echo "  formula line was: $FORMULA"
+            exit 1
+          fi
+          VERCODE=$(( BASE + COUNT + OFFSET ))
+          echo "KSU-Next driver version code: ${VERCODE}"
+          echo "  formula: ${BASE} + ${COUNT} + ${OFFSET}"
+          echo "  tag:     ${KSU_NEXT_TAG}"
+          echo "VERCODE=${VERCODE}" >> "$GITHUB_OUTPUT"
 
       - name: Configure + verify .config
         run: |
@@ -123,31 +145,46 @@ jobs:
 
       - name: Version + package AnyKernel3
         id: pack
+        env:
+          KSU_TAG: ${{ steps.ksun_tag.outputs.TAG }}
+          KSU_VERCODE: ${{ steps.ksun_integrate.outputs.VERCODE }}
         run: |
-          VERSION="$(date +%Y%m%d-%H%M)"
-          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
+          # Release identity derives from the KSU-Next tag + driver version
+          # code. Date suffix keeps unique filenames across rebuilds of the
+          # same tag so GitHub release upload never collides.
+          DATE="$(date +%Y%m%d-%H%M)"
+          TAG_BASE="OP7-OOS11-KSUN-${KSU_TAG}-${KSU_VERCODE}"      # e.g. OP7-OOS11-KSUN-v3.2.0-legacy-33129
+          RELEASE_TAG="${TAG_BASE}-${DATE}"                        # unique git tag on the repo
+          RELEASE_NAME="${TAG_BASE}"                               # pretty display name
+          ZIP_NAME="${TAG_BASE}.zip"                               # user-facing zip file
+          echo "TAG_BASE=${TAG_BASE}"         >> "$GITHUB_OUTPUT"
+          echo "RELEASE_TAG=${RELEASE_TAG}"   >> "$GITHUB_OUTPUT"
+          echo "RELEASE_NAME=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "ZIP_NAME=${ZIP_NAME}"         >> "$GITHUB_OUTPUT"
           cd AnyKernel3
-          zip -r "../OP7-OOS11-KSUN-${VERSION}.zip" *
+          zip -r "../${ZIP_NAME}" *
           cd ..
-          ls -la OP7-OOS11-KSUN-*.zip
+          ls -la "${ZIP_NAME}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OP7-OOS11-KSUN-${{ steps.pack.outputs.VERSION }}
-          path: OP7-OOS11-KSUN-*.zip
+          name: ${{ steps.pack.outputs.TAG_BASE }}
+          path: ${{ steps.pack.outputs.ZIP_NAME }}
 
       - name: Release
         if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
-          files: OP7-OOS11-KSUN-*.zip
-          name: OP7-OOS11-KSUN-${{ steps.pack.outputs.VERSION }}
-          tag_name: ${{ steps.pack.outputs.VERSION }}
+          files: ${{ steps.pack.outputs.ZIP_NAME }}
+          name: ${{ steps.pack.outputs.RELEASE_NAME }}
+          tag_name: ${{ steps.pack.outputs.RELEASE_TAG }}
           body: |
             Device: OnePlus 7 / 7Pro / 7T / 7TPro
             Target: OxygenOS 11
-            KernelSU-Next: ${{ steps.ksun_tag.outputs.TAG }} (auto-latest legacy)
+            KernelSU-Next tag: ${{ steps.ksun_tag.outputs.TAG }} (auto-resolved latest legacy)
+            KernelSU-Next driver version code: ${{ steps.ksun_integrate.outputs.VERCODE }}
             SUSFS: disabled (add in follow-up once root grant is stable)
+            Build: ${{ steps.pack.outputs.RELEASE_TAG }}
         # Uses the built-in GITHUB_TOKEN (granted contents:write at the
         # workflow level above). No repo secret required.
