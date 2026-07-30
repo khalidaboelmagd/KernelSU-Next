@@ -2,8 +2,9 @@
 # Automatically generated file; DO NOT EDIT.
 # Linux/arm64 4.14.190 Kernel Configuration
 #
-# KernelSU-Next (no SUSFS in this build - to be added once base root
-# grant is confirmed stable with the upgraded KSU-Next driver).
+# KernelSU-Next, no SUSFS. This is the stock/fallback variant.
+# The susfs variant layers arch/arm64/configs/susfs.config on top of this
+# file via scripts/kconfig/merge_config.sh - do not add SUSFS options here.
 # Hook mode auto-selects KSU_KPROBES_HOOK because CONFIG_KPROBES=y
 # and CONFIG_KSU_MANUAL_HOOK is unset (tree has no ksu_handle_*
 # call sites in fs/*.c so manual hooks would silently no-op).

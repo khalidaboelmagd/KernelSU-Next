@@ -130,3 +130,12 @@ kernel/configs/android-*.cfg
 #Ignoring Android.bp link file
 #
 Android.bp
+
+#
+# KernelSU integration artifacts (created by CI, never committed).
+# drivers/kernelsu is a symlink into the cloned driver tree; drivers/Kconfig
+# sources drivers/kernelsu/Kconfig unconditionally, so the symlink must exist
+# before any make invocation.
+#
+/KernelSU-Next/
+/drivers/kernelsu

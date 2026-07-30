@@ -3,14 +3,9 @@ name: Build OnePlus-Sm8150-Kernel-OOS11
 on:
   workflow_dispatch:
   push:
-    branches: [main, fix/ksun-susfs]
+    branches: [main, fix/ksun-susfs, feat/susfs-v2]
 
 env:
-  # KSU_NEXT_TAG is resolved at build time to the LATEST tag matching
-  # the legacy line (vX.Y.Z-legacy, excluding susfs variants because
-  # SUSFS requires shims on this 4.14 msm tree). See "Resolve latest
-  # KSU-Next legacy tag" step. Override here to pin to a specific tag
-  # if a new legacy release regresses on OP7Pro.
   KERNEL_DEFCONFIG: blu_spark_defconfig
   CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
   CCACHE_NOHASHDIR: "true"
@@ -23,6 +18,30 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      # Never let a failing susfs build cancel the stock fallback build - the
+      # whole point of the matrix is that a bootable zip always comes out.
+      fail-fast: false
+      matrix:
+        include:
+          # SUSFS variant. KernelSU-Next upstream deleted SUSFS from its
+          # non-GKI "legacy" line (commit 07692d96a "kernel: purge SuSFS
+          # remnants"), so the driver has to come from sidex15's maintained
+          # legacy-susfs-v2 fork. Pinned by SHA, not branch, so a force-push
+          # upstream cannot silently change what lands on the phone.
+          - variant: susfs
+            ksu_repo: sidex15/KernelSU-Next
+            ksu_ref: f110cddc07e27b21ad77c6c31261660efb25dce4  # legacy-susfs-v2 @ 2026-07-11
+            susfs: "true"
+          # Stock fallback: newest upstream legacy tag, no SUSFS. This is the
+          # known-good configuration - keep it green as a regression canary.
+          - variant: stock
+            ksu_repo: KernelSU-Next/KernelSU-Next
+            ksu_ref: ""        # resolved at build time to newest *-legacy tag
+            susfs: "false"
+
+    name: build (${{ matrix.variant }})
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,6 +50,8 @@ jobs:
 
       - name: Set up ccache
         uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ matrix.variant }}
 
       - name: Free disk space
         run: |
@@ -49,10 +70,18 @@ jobs:
           git clone --depth=1 -b oneplus7 https://github.com/snowwolf725/AnyKernel3
           rm -rf AnyKernel3/.git
 
-      - name: Resolve latest KSU-Next legacy tag
-        id: ksun_tag
+      - name: Resolve KernelSU-Next ref
+        id: ksun_ref
+        env:
+          PINNED: ${{ matrix.ksu_ref }}
         run: |
           set -euo pipefail
+          if [ -n "$PINNED" ]; then
+            echo "Using pinned ref: $PINNED"
+            echo "REF=$PINNED" >> "$GITHUB_OUTPUT"
+            echo "LABEL=legacy-susfs-v2" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           TAG=$(curl -sSf 'https://api.github.com/repos/KernelSU-Next/KernelSU-Next/tags?per_page=100' \
             | jq -r '.[].name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+-legacy$"))' \
             | sort -V | tail -1)
@@ -61,28 +90,37 @@ jobs:
             exit 1
           fi
           echo "Resolved latest KSU-Next legacy tag: $TAG"
-          echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
+          echo "REF=$TAG"   >> "$GITHUB_OUTPUT"
+          echo "LABEL=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Integrate KernelSU-Next (${{ steps.ksun_tag.outputs.TAG }})
-        id: ksun_integrate
+      - name: Integrate KernelSU-Next
+        id: ksun
         env:
-          KSU_NEXT_TAG: ${{ steps.ksun_tag.outputs.TAG }}
+          KSU_REPO: ${{ matrix.ksu_repo }}
+          KSU_REF: ${{ steps.ksun_ref.outputs.REF }}
         run: |
           set -euo pipefail
-          # Clean any prior integration attempts so setup.sh has a fresh tree
+          # Wire the driver in explicitly instead of piping a remote setup.sh
+          # into bash. setup.sh hardcodes OWNER=KernelSU-Next, so running the
+          # fork's copy would still clone upstream and silently produce a
+          # SUSFS-less driver. Doing it by hand also keeps the build pinned.
           rm -rf KernelSU-Next drivers/kernelsu
-          curl -LSsf "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/${KSU_NEXT_TAG}/kernel/setup.sh" \
-            | bash -s "${KSU_NEXT_TAG}"
-          test -d KernelSU-Next
+          git clone "https://github.com/${KSU_REPO}" KernelSU-Next
+          git -C KernelSU-Next checkout --detach "${KSU_REF}"
           echo "### KernelSU-Next commit:"
-          git -C KernelSU-Next log -1 --oneline || true
-          # Compute the driver version code the same way KSU-Next's Kbuild
-          # does. The formula constants drift per tag (v3.1.0-legacy used
-          # 30000+count+119; v3.2.0-legacy uses 30000+count+150). Parse the
-          # base and offset directly out of KernelSU-Next/kernel/Kbuild so
-          # this stays correct whatever future tags publish.
+          git -C KernelSU-Next log -1 --oneline
+
+          ln -sfn ../KernelSU-Next/kernel drivers/kernelsu
+          test -f drivers/kernelsu/Kconfig  # drivers/Kconfig sources this unconditionally
+
+          # drivers/Makefile and drivers/Kconfig entries are committed in-tree,
+          # so nothing to patch here. Verify they are actually present.
+          grep -q 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile
+          grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+
+          # Driver version code, parsed straight out of the fork's Kbuild so it
+          # stays correct as the constants drift between tags/branches.
           COUNT=$(git -C KernelSU-Next rev-list --count HEAD)
-          # line looks like: $(eval KSU_VERSION=$(shell expr 30000 + $(KSU_GIT_VERSION) + 150))
           FORMULA=$(grep -E 'expr [0-9]+ \+ \$\(KSU_GIT_VERSION\) \+ [0-9]+' \
                     KernelSU-Next/kernel/Kbuild | head -1)
           BASE=$(  echo "$FORMULA" | sed -E 's/.*expr ([0-9]+) \+.*/\1/')
@@ -93,10 +131,24 @@ jobs:
             exit 1
           fi
           VERCODE=$(( BASE + COUNT + OFFSET ))
-          echo "KSU-Next driver version code: ${VERCODE}"
-          echo "  formula: ${BASE} + ${COUNT} + ${OFFSET}"
-          echo "  tag:     ${KSU_NEXT_TAG}"
+          echo "KSU-Next driver version code: ${VERCODE}  (${BASE} + ${COUNT} + ${OFFSET})"
           echo "VERCODE=${VERCODE}" >> "$GITHUB_OUTPUT"
+
+      - name: Stage SUSFS sources
+        if: matrix.susfs == 'true'
+        run: |
+          set -euo pipefail
+          # Vendored in-tree under susfs/ so the build is reproducible and the
+          # exact code shipped to the device is reviewable in git history.
+          cp susfs/fs/susfs.c                    fs/susfs.c
+          cp susfs/include/linux/susfs.h         include/linux/susfs.h
+          cp susfs/include/linux/susfs_def.h     include/linux/susfs_def.h
+          echo "### SUSFS version:"
+          grep -E '^#define SUSFS_VERSION' include/linux/susfs.h
+          # The kernel-side hooks are committed directly in fs/*, mm/*, kernel/*
+          # and are all #ifdef CONFIG_KSU_SUSFS*-guarded, so there is no patch
+          # step here and the stock variant compiles them out entirely.
+          grep -q 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
 
       - name: Configure + verify .config
         run: |
@@ -108,25 +160,66 @@ jobs:
             CROSS_COMPILE=aarch64-linux-androidkernel- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             "${KERNEL_DEFCONFIG}"
+
+          if [ "${{ matrix.susfs }}" = "true" ]; then
+            echo "### Merging SUSFS config fragment"
+            ARCH=arm64 scripts/kconfig/merge_config.sh -m -O out \
+              out/.config arch/arm64/configs/susfs.config
+            make ARCH=arm64 O=out \
+              CC="ccache clang-14" LLVM=1 LLVM_IAS=1 \
+              CLANG_TRIPLE=aarch64-linux-gnu- \
+              CROSS_COMPILE=aarch64-linux-androidkernel- \
+              CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+              olddefconfig
+          fi
+
           echo "### Verifying required configs survived Kconfig:"
-          # KSU_KPROBES_HOOK must be auto-selected (kernel has KPROBES=y and
-          # this tree does not carry manual ksu_handle_* call sites). If it
-          # is not =y the driver has no hooks and root grant will silently
-          # fail or panic — bail out now rather than ship a broken kernel.
-          for k in CONFIG_KSU CONFIG_KSU_KPROBES_HOOK CONFIG_KRETPROBES \
-                   CONFIG_KPROBES CONFIG_HAVE_SYSCALL_TRACEPOINTS; do
+          # Options absent from the driver's Kconfig vanish from .config with no
+          # error at all - that is how an earlier build shipped broken. Assert
+          # every symbol we depend on, explicitly.
+          REQUIRED="CONFIG_KSU CONFIG_KSU_KPROBES_HOOK CONFIG_KRETPROBES CONFIG_KPROBES CONFIG_HAVE_SYSCALL_TRACEPOINTS"
+          if [ "${{ matrix.susfs }}" = "true" ]; then
+            # Derive the list from the fragment itself so the two can never
+            # drift apart. Plain ERE + cut - no PCRE lookahead, which GNU grep
+            # on the runner does not support.
+            FRAG_OPTS=$(grep -E '^CONFIG_KSU_SUSFS[A-Z_]*=y$' \
+                        arch/arm64/configs/susfs.config | cut -d= -f1 | tr '\n' ' ')
+            if [ -z "$FRAG_OPTS" ]; then
+              echo "FAIL: parsed no options out of susfs.config"
+              exit 1
+            fi
+            echo "### SUSFS options required by the fragment: $FRAG_OPTS"
+            REQUIRED="$REQUIRED $FRAG_OPTS"
+          fi
+          for k in $REQUIRED; do
             if ! grep -qE "^${k}=y" out/.config; then
               echo "FAIL: ${k} is not set in out/.config"
               grep -E "${k}" out/.config || echo "  (not present at all)"
               exit 1
             fi
           done
-          echo "### Final KSU / KPROBES config:"
-          grep -E "KSU|KPROBES|TRACEPOINTS" out/.config | sort || true
-          # Guard: make sure SUSFS did NOT accidentally sneak in
-          if grep -qE "^CONFIG_KSU_SUSFS" out/.config; then
-            echo "FAIL: CONFIG_KSU_SUSFS is set but SUSFS integration is disabled in this build"
-            exit 1
+
+          echo "### Final KSU / SUSFS / KPROBES config:"
+          grep -E "KSU|SUSFS|KPROBES|TRACEPOINTS" out/.config | sort || true
+
+          if [ "${{ matrix.susfs }}" = "true" ]; then
+            # These features have NO kernel-side hooks in this tree yet.
+            # Enabling one would ship a kernel where it silently does nothing,
+            # which is worse than not having it. Refuse to build.
+            for k in CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_OPEN_REDIRECT \
+                     CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS; do
+              if grep -qE "^${k}=y" out/.config; then
+                echo "FAIL: ${k}=y but its hooks are not ported to this tree."
+                echo "      Port the fs/namei.c + fs/readdir.c hooks first."
+                exit 1
+              fi
+            done
+          else
+            # Stock variant must contain no SUSFS at all.
+            if grep -qE "^CONFIG_KSU_SUSFS" out/.config; then
+              echo "FAIL: CONFIG_KSU_SUSFS is set in the stock (no-SUSFS) variant"
+              exit 1
+            fi
           fi
 
       - name: Build kernel Image
@@ -146,21 +239,20 @@ jobs:
       - name: Version + package AnyKernel3
         id: pack
         env:
-          KSU_TAG: ${{ steps.ksun_tag.outputs.TAG }}
-          KSU_VERCODE: ${{ steps.ksun_integrate.outputs.VERCODE }}
+          KSU_LABEL: ${{ steps.ksun_ref.outputs.LABEL }}
+          KSU_VERCODE: ${{ steps.ksun.outputs.VERCODE }}
+          VARIANT: ${{ matrix.variant }}
         run: |
-          # Release identity derives from the KSU-Next tag + driver version
-          # code. Date suffix keeps unique filenames across rebuilds of the
-          # same tag so GitHub release upload never collides.
-          DATE="$(date +%Y%m%d-%H%M)"
-          TAG_BASE="OP7-OOS11-KSUN-${KSU_TAG}-${KSU_VERCODE}"      # e.g. OP7-OOS11-KSUN-v3.2.0-legacy-33129
-          RELEASE_TAG="${TAG_BASE}-${DATE}"                        # unique git tag on the repo
-          RELEASE_NAME="${TAG_BASE}"                               # pretty display name
-          ZIP_NAME="${TAG_BASE}.zip"                               # user-facing zip file
-          echo "TAG_BASE=${TAG_BASE}"         >> "$GITHUB_OUTPUT"
-          echo "RELEASE_TAG=${RELEASE_TAG}"   >> "$GITHUB_OUTPUT"
-          echo "RELEASE_NAME=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
-          echo "ZIP_NAME=${ZIP_NAME}"         >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          TAG_BASE="OP7-OOS11-KSUN-${VARIANT}-${KSU_LABEL}-${KSU_VERCODE}"
+          ZIP_NAME="${TAG_BASE}.zip"
+          # Both matrix jobs must target one release so the susfs zip and its
+          # stock fallback sit side by side. Keyed on the run number, not the
+          # wall clock - the two jobs finish minutes apart and would otherwise
+          # create two separate releases.
+          echo "TAG_BASE=${TAG_BASE}"     >> "$GITHUB_OUTPUT"
+          echo "RELEASE_TAG=OP7-OOS11-build-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "ZIP_NAME=${ZIP_NAME}"     >> "$GITHUB_OUTPUT"
           cd AnyKernel3
           zip -r "../${ZIP_NAME}" *
           cd ..
@@ -177,14 +269,16 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ steps.pack.outputs.ZIP_NAME }}
-          name: ${{ steps.pack.outputs.RELEASE_NAME }}
+          name: ${{ steps.pack.outputs.RELEASE_TAG }}
           tag_name: ${{ steps.pack.outputs.RELEASE_TAG }}
           body: |
             Device: OnePlus 7 / 7Pro / 7T / 7TPro
             Target: OxygenOS 11
-            KernelSU-Next tag: ${{ steps.ksun_tag.outputs.TAG }} (auto-resolved latest legacy)
-            KernelSU-Next driver version code: ${{ steps.ksun_integrate.outputs.VERCODE }}
-            SUSFS: disabled (add in follow-up once root grant is stable)
-            Build: ${{ steps.pack.outputs.RELEASE_TAG }}
-        # Uses the built-in GITHUB_TOKEN (granted contents:write at the
-        # workflow level above). No repo secret required.
+
+            Two zips per run - flash the `stock` one if the `susfs` one misbehaves.
+
+            - `susfs`: sidex15/KernelSU-Next @ legacy-susfs-v2 + SUSFS v2.2.0 (NON-GKI)
+              enabled: SUS_MOUNT, SUS_MAP, TRY_UMOUNT, SUS_MEMFD, ENABLE_LOG
+            - `stock`: upstream KernelSU-Next latest `*-legacy` tag, no SUSFS
+
+            Hook mode: KSU_KPROBES_HOOK (unchanged).
