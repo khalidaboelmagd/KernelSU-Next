@@ -139,3 +139,11 @@ Android.bp
 #
 /KernelSU-Next/
 /drivers/kernelsu
+
+#
+# ...but the driver patches under susfs/ ARE part of the build and must be
+# tracked. The kernel's blanket "*.patch" rule above would otherwise drop
+# them silently: git add -A skips them without warning and the build then
+# fails in CI with "No such file or directory".
+#
+!susfs/*.patch

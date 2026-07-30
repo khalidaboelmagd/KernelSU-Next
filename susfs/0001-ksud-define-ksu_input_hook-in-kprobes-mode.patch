@@ -1,0 +1,22 @@
+--- a/kernel/runtime/ksud_integration.c	2026-07-30 22:04:35.477456151 +0300
++++ b/kernel/runtime/ksud_integration.c	2026-07-30 22:04:35.493456198 +0300
+@@ -70,6 +70,11 @@
+ static struct work_struct __maybe_unused stop_init_rc_hook_work;
+ static struct work_struct __maybe_unused stop_execve_hook_work;
+ static struct work_struct __maybe_unused stop_input_hook_work;
++/* feature/selinux_hide.c reads this in both hook modes, but upstream only
++ * defines it for manual hooks. Cleared in stop_input_hook() below so the
++ * selinux_hide wait loop terminates at the same point in either mode.
++ */
++bool ksu_input_hook __read_mostly = true;
+ #else
+ bool ksu_init_rc_hook __read_mostly = true;
+ bool __maybe_unused ksu_vfs_read_hook = true;
+@@ -865,6 +870,7 @@
+ 		return;
+ 	}
+ 	input_hook_stopped = true;
++	ksu_input_hook = false;
+ 	bool ret = schedule_work(&stop_input_hook_work);
+ 	pr_info("unregister input kprobe: %d!\n", ret);
+ #else
