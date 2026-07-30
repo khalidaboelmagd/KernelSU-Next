@@ -138,6 +138,13 @@ jobs:
         if: matrix.susfs == 'true'
         run: |
           set -euo pipefail
+          # The fork defines ksu_input_hook only for manual hooks, but
+          # feature/selinux_hide.c reads it in both modes, so a kprobes build
+          # fails to link. Patch the driver before compiling it.
+          patch -p1 -d KernelSU-Next \
+            < susfs/0001-ksud-define-ksu_input_hook-in-kprobes-mode.patch
+          grep -q 'ksu_input_hook = false;' KernelSU-Next/kernel/runtime/ksud_integration.c
+
           # Vendored in-tree under susfs/ so the build is reproducible and the
           # exact code shipped to the device is reviewable in git history.
           cp susfs/fs/susfs.c                    fs/susfs.c

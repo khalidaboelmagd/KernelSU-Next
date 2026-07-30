@@ -44,6 +44,17 @@
 #define avc_cache_stats_incr(field)	do {} while (0)
 #endif
 
+#ifdef CONFIG_KSU_SUSFS
+/* Storage for the AVC log spoofing flag. fs/susfs.c writes it from the
+ * CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING supercall and references it
+ * unconditionally, so this must exist whenever CONFIG_KSU_SUSFS is on.
+ * The sids are provided by the KernelSU-Next driver's selinux layer.
+ */
+extern u32 susfs_ksu_sid;
+extern u32 susfs_priv_app_sid;
+bool susfs_is_avc_log_spoofing_enabled = false;
+#endif
+
 struct avc_entry {
 	u32			ssid;
 	u32			tsid;
@@ -187,6 +198,26 @@ static void avc_dump_query(struct audit_buffer *ab, struct selinux_state *state,
 	}
 
 	rc = security_sid_to_context(state, tsid, &scontext, &scontext_len);
+#ifdef CONFIG_KSU_SUSFS
+	/* Report the ksu domain as an ordinary priv_app so denials naming it
+	 * do not stand out in the audit log.
+	 *
+	 * Upstream susfs jumps straight to bypass_orig_flow here and leaks
+	 * scontext when rc == 0; free it first.
+	 */
+	if (unlikely(tsid == susfs_ksu_sid &&
+		     READ_ONCE(susfs_is_avc_log_spoofing_enabled))) {
+		if (rc) {
+			audit_log_format(ab, " tsid=%d", susfs_priv_app_sid);
+		} else {
+			audit_log_format(ab, " tcontext=%s",
+					 "u:r:priv_app:s0:c512,c768");
+			kfree(scontext);
+		}
+		goto bypass_orig_flow;
+	}
+#endif
+
 	if (rc)
 		audit_log_format(ab, " tsid=%d", tsid);
 	else {
@@ -194,6 +225,9 @@ static void avc_dump_query(struct audit_buffer *ab, struct selinux_state *state,
 		kfree(scontext);
 	}
 
+#ifdef CONFIG_KSU_SUSFS
+bypass_orig_flow:
+#endif
 	BUG_ON(!tclass || tclass >= ARRAY_SIZE(secclass_map));
 	audit_log_format(ab, " tclass=%s", secclass_map[tclass-1].name);
 }
