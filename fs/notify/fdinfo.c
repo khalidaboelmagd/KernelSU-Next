@@ -14,6 +14,7 @@
 #include <linux/proc_fs.h>
 #include <linux/exportfs.h>
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+#include <linux/slab.h>		/* kmalloc(), not otherwise pulled in here */
 #include <linux/susfs_def.h>
 #endif
 
