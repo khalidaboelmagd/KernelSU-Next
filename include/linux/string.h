@@ -101,6 +101,37 @@ extern __kernel_size_t strcspn(const char *,const char *);
 extern void * memset(void *,int,__kernel_size_t);
 #endif
 
+/*
+ * Backport of mainline commit 458a3bf82df8 ("lib/string: Add strscpy_pad()"),
+ * which landed in 5.2 and was picked into 4.14 stable at 4.14.222. This tree
+ * is 4.14.190, so it is genuinely absent here.
+ *
+ * KernelSU-Next's compat/kernel_compat.h wraps it as __strscpy_pad() with the
+ * same >= 4.14.222 check, but policy/allowlist.c calls strscpy_pad() directly
+ * and so fails to build here. Backporting it is preferable to patching the
+ * driver, since the fix then survives driver updates.
+ *
+ * If this tree is ever merged forward past 4.14.222, upstream declares
+ * strscpy_pad() in this same header and this block must be dropped - the
+ * duplicate definition will fail the build loudly rather than misbehave.
+ *
+ * Placed after memset() above, which the implementation calls.
+ */
+#ifndef __HAVE_ARCH_STRSCPY_PAD
+static inline ssize_t strscpy_pad(char *dest, const char *src, size_t count)
+{
+	ssize_t written;
+
+	written = strscpy(dest, src, count);
+	if (written < 0 || written == count - 1)
+		return written;
+
+	memset(dest + written + 1, 0, count - written - 1);
+
+	return written;
+}
+#endif
+
 #ifndef __HAVE_ARCH_MEMSET16
 extern void *memset16(uint16_t *, uint16_t, __kernel_size_t);
 #endif
